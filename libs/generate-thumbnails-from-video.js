@@ -1,6 +1,6 @@
 const fs = require("fs");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
-const { spawnSync } = require("child_process");
+const { spawnSync, spawn } = require("child_process");
 const doesFileExist = require("./does-file-exist.js");
 const generateTmpFilePath = require("./generate-tmp-file-path.js");
 
@@ -9,15 +9,11 @@ const ffmpegPath = "/opt/bin/ffmpeg";
 
 const THUMBNAIL_TARGET_BUCKET = process.env.S3_BUCKET;
 
-module.exports = async (tmpVideoPath, numberOfThumbnails, videoFileName) => {
-  const randomTimes = generateRandomTimes(tmpVideoPath, numberOfThumbnails);
+module.exports = async (tmpVideoPath, captureInterval, videoFileName) => {
+  const times = generateTimesToCapture(tmpVideoPath, captureInterval);
 
-  for (const [index, randomTime] of Object.entries(randomTimes)) {
-    const tmpThumbnailPath = await createImageFromVideo(
-      tmpVideoPath,
-      randomTime
-    );
-
+  for (const [index, time] of Object.entries(times)) {
+    const tmpThumbnailPath = await createImageFromVideo(tmpVideoPath, time);
     if (doesFileExist(tmpThumbnailPath)) {
       const nameOfImageToCreate = generateNameOfImageToUpload(
         videoFileName,
@@ -28,38 +24,20 @@ module.exports = async (tmpVideoPath, numberOfThumbnails, videoFileName) => {
   }
 };
 
-const generateRandomTimes = (tmpVideoPath, numberOfTimesToGenerate) => {
-  const timesInSeconds = [];
+const generateTimesToCapture = (tmpVideoPath, captureInterval) => {
   const videoDuration = getVideoDuration(tmpVideoPath);
+  console.info(`Video Duration: `, videoDuration);
 
-  for (let x = 0; x < numberOfTimesToGenerate; x++) {
-    const randomNum = getRandomNumberNotInExistingList(
-      timesInSeconds,
-      videoDuration
-    );
+  // Calculate the number of thumbnails to generate based on the time interval
+  const thumbnailCount = Math.ceil(videoDuration / captureInterval);
+  console.info(`Generating thumbnail count: `, thumbnailCount);
 
-    if (randomNum >= 0) {
-      timesInSeconds.push(randomNum);
-    }
-  }
+  const times = new Array(thumbnailCount)
+    .fill(0)
+    .map((_, i) => i * captureInterval);
 
-  return timesInSeconds;
-};
-
-const getRandomNumberNotInExistingList = (existingList, maxValueOfNumber) => {
-  for (let attemptNumber = 0; attemptNumber < 3; attemptNumber++) {
-    const randomNum = getRandomNumber(maxValueOfNumber);
-
-    if (!existingList.includes(randomNum)) {
-      return randomNum;
-    }
-  }
-
-  return -1;
-};
-
-const getRandomNumber = (upperLimit) => {
-  return Math.floor(Math.random() * upperLimit);
+  console.info("Times for generate thumbnails", JSON.stringify(times, null, 2));
+  return times;
 };
 
 const getVideoDuration = (tmpVideoPath) => {
@@ -76,40 +54,38 @@ const getVideoDuration = (tmpVideoPath) => {
   return Math.floor(ffprobe.stdout.toString());
 };
 
-const createImageFromVideo = (tmpVideoPath, targetSecond) => {
-  const tmpThumbnailPath = generateThumbnailPath(targetSecond);
-  const ffmpegParams = createFfmpegParams(
-    tmpVideoPath,
-    tmpThumbnailPath,
-    targetSecond
-  );
-  spawnSync(ffmpegPath, ffmpegParams);
+const createImageFromVideo = (videoPath, time) => {
+  const thumbnailPath = generateThumbnailPath(time);
+  console.info("Thumbnail Path: ", thumbnailPath);
+  const ffmpegParams = createFfmpegParams(videoPath, thumbnailPath, time);
 
-  return tmpThumbnailPath;
+  const result = spawnSync(ffmpegPath, ffmpegParams);
+
+  if (result.status !== 0) {
+    console.error(`Command failed: ${result.stderr.toString()}`);
+  }
+  return thumbnailPath;
 };
 
-const generateThumbnailPath = (targetSecond) => {
-  const tmpThumbnailPathTemplate = "/tmp/thumbnail-{HASH}-{num}.jpg";
-  const uniqueThumbnailPath = generateTmpFilePath(tmpThumbnailPathTemplate);
-  const thumbnailPathWithNumber = uniqueThumbnailPath.replace(
-    "{num}",
-    targetSecond
-  );
+const generateThumbnailPath = (time) => {
+  const thumbnailPathTemplate = "/tmp/thumbnail-{HASH}-{num}.jpg";
+  const uniqueThumbnailPath = generateTmpFilePath(thumbnailPathTemplate);
+  const thumbnailPathWithNumber = uniqueThumbnailPath.replace("{num}", time);
 
   return thumbnailPathWithNumber;
 };
 
-const createFfmpegParams = (tmpVideoPath, tmpThumbnailPath, targetSecond) => {
+const createFfmpegParams = (videoPath, thumbnailPath, time) => {
   return [
     "-ss",
-    targetSecond,
+    time,
     "-i",
-    tmpVideoPath,
+    videoPath,
     "-vf",
-    "thumbnail,scale=16:9",
+    "thumbnail,scale=160:90",
     "-vframes",
     1,
-    tmpThumbnailPath,
+    thumbnailPath,
   ];
 };
 
@@ -118,12 +94,12 @@ const generateNameOfImageToUpload = (videoFileName, i) => {
   return `${strippedExtension}-${i}.jpg`;
 };
 
-const uploadFileToS3 = async (tmpThumbnailPath, nameOfImageToCreate) => {
-  const contents = fs.createReadStream(tmpThumbnailPath);
+const uploadFileToS3 = async (thumbnailPath, thumbnailKey) => {
+  const contents = fs.createReadStream(thumbnailPath);
 
   const command = new PutObjectCommand({
     Bucket: THUMBNAIL_TARGET_BUCKET,
-    Key: nameOfImageToCreate,
+    Key: thumbnailKey,
     Body: contents,
     ContentType: "image/jpg",
   });
