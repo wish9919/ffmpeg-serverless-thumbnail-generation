@@ -62,7 +62,7 @@ const createImageFromVideo = (videoPath, time) => {
   const result = spawnSync(ffmpegPath, ffmpegParams);
 
   if (result.status !== 0) {
-    console.error(`Command failed: ${result.stderr.toString()}`);
+    throw new Error(`Command failed: ${result.stderr.toString()}`);
   }
   return thumbnailPath;
 };
